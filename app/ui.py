@@ -1,3 +1,4 @@
+import sys
 from dataclasses import asdict
 from typing import Any, Dict, Optional
 
@@ -6,11 +7,15 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from .client import build_curl
 from .config import (
     APP_TITLE,
+    APP_VERSION,
+    CREATOR_NAME,
     DEFAULT_BASE_URL,
     DEFAULT_ENDPOINT,
     DEFAULT_MODEL,
     DEFAULT_SYSTEM_PROMPT,
     DEFAULT_USER_PROMPT,
+    GITHUB_NAME,
+    PROJECT_URL,
     LLMRequestConfig,
 )
 from .storage import ProfileStore
@@ -58,6 +63,9 @@ class LLMPanel(QtWidgets.QMainWindow):
         self._profile_store = ProfileStore(path=self._profiles_path())
         self._profiles = self._profile_store.load()
 
+        self._screen_connected = False
+        self._split_ratio = 0.5
+
         self._init_ui()
         self._wire_actions()
 
@@ -66,7 +74,6 @@ class LLMPanel(QtWidgets.QMainWindow):
 
         self._last_metrics: Dict[str, Any] = {}
         self._last_text = ""
-        self._screen_connected = False
 
     def _constrain_to_screen(self) -> None:
         screen = QtGui.QGuiApplication.primaryScreen()
@@ -90,12 +97,21 @@ class LLMPanel(QtWidgets.QMainWindow):
         window.screenChanged.connect(self._on_screen_changed)
         self._screen_connected = True
         self._constrain_to_screen()
+        self._set_splitter_equal()
 
     def _on_screen_changed(self, screen: Optional[QtGui.QScreen]) -> None:
         if screen:
             screen.geometryChanged.connect(self._constrain_to_screen)
             screen.availableGeometryChanged.connect(self._constrain_to_screen)
         self._constrain_to_screen()
+        self._set_splitter_equal()
+
+    def _set_splitter_equal(self) -> None:
+        total = self.splitter.width()
+        if total > 0:
+            half = total // 2
+            self.splitter.setSizes([half, total - half])
+        self._split_ratio = 0.5
 
     def _profiles_path(self) -> str:
         return str(QtCore.QDir.homePath() + "/.llm_panel_profiles.json")
@@ -120,6 +136,11 @@ class LLMPanel(QtWidgets.QMainWindow):
         self.form_layout.setContentsMargins(12, 12, 12, 12)
         self.form_layout.setSpacing(10)
 
+        self.form_content = QtWidgets.QWidget()
+        self.form_content_layout = QtWidgets.QVBoxLayout(self.form_content)
+        self.form_content_layout.setContentsMargins(0, 0, 0, 0)
+        self.form_content_layout.setSpacing(10)
+
         self.response_widget = QtWidgets.QWidget()
         self.response_layout = QtWidgets.QVBoxLayout(self.response_widget)
         self.response_layout.setContentsMargins(12, 12, 12, 12)
@@ -128,33 +149,41 @@ class LLMPanel(QtWidgets.QMainWindow):
         self.form_scroll = QtWidgets.QScrollArea()
         self.form_scroll.setWidgetResizable(True)
         self.form_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
-        self.form_scroll.setWidget(self.form_widget)
+        self.form_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.form_scroll.setWidget(self.form_content)
 
         self.response_scroll = QtWidgets.QScrollArea()
         self.response_scroll.setWidgetResizable(True)
         self.response_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        self.response_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.response_scroll.setWidget(self.response_widget)
 
-        self.splitter.addWidget(self.form_scroll)
+        self.splitter.addWidget(self.form_widget)
         self.splitter.addWidget(self.response_scroll)
-        self.splitter.setStretchFactor(0, 0)
+        self.splitter.setStretchFactor(0, 1)
         self.splitter.setStretchFactor(1, 1)
-        self.splitter.setSizes([460, 780])
+        self.splitter.splitterMoved.connect(self._on_splitter_moved)
 
         self._init_profiles_bar()
         self._init_connection_section()
         self._init_request_section()
         self._init_buttons()
         self._init_response_area()
+        self._init_menu()
 
-        self.form_layout.addWidget(self.prof_group)
-        self.form_layout.addWidget(CollapsibleSection("Conexion", self.conn_body))
-        self.form_layout.addWidget(CollapsibleSection("Request", self.req_body))
+        self.form_content_layout.addWidget(self.prof_group)
+        self.form_content_layout.addWidget(CollapsibleSection("Conexion", self.conn_body))
+        self.form_content_layout.addWidget(CollapsibleSection("Request", self.req_body))
+        self.form_content_layout.addStretch(1)
+
+        self.form_layout.addWidget(self.form_scroll, stretch=1)
         self.form_layout.addLayout(self.btn_row)
-        self.form_layout.addStretch(1)
 
         self.status = self.statusBar()
         self.status.showMessage("Listo")
+
+        self._update_min_widths()
+        self._apply_splitter_ratio()
 
     def _init_profiles_bar(self) -> None:
         self.prof_group = QtWidgets.QGroupBox("Perfiles")
@@ -180,6 +209,9 @@ class LLMPanel(QtWidgets.QMainWindow):
     def _init_connection_section(self) -> None:
         self.conn_body = QtWidgets.QWidget()
         conn_form = QtWidgets.QFormLayout(self.conn_body)
+        conn_form.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignLeft)
+        conn_form.setFormAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop)
+        conn_form.setFieldGrowthPolicy(QtWidgets.QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
 
         self.base_url = QtWidgets.QLineEdit(DEFAULT_BASE_URL)
         self.endpoint = QtWidgets.QLineEdit(DEFAULT_ENDPOINT)
@@ -203,6 +235,9 @@ class LLMPanel(QtWidgets.QMainWindow):
     def _init_request_section(self) -> None:
         self.req_body = QtWidgets.QWidget()
         req_form = QtWidgets.QFormLayout(self.req_body)
+        req_form.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignLeft)
+        req_form.setFormAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop)
+        req_form.setFieldGrowthPolicy(QtWidgets.QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
 
         self.model = QtWidgets.QLineEdit(DEFAULT_MODEL)
 
@@ -275,6 +310,47 @@ class LLMPanel(QtWidgets.QMainWindow):
         self.response_tabs.addTab(self.response_meta, "Meta")
         self.response_layout.addWidget(self.response_tabs)
 
+    def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
+        super().resizeEvent(event)
+        self._apply_splitter_ratio()
+
+    def _on_splitter_moved(self, _pos: int, _index: int) -> None:
+        sizes = self.splitter.sizes()
+        total = sum(sizes)
+        if total > 0:
+            self._split_ratio = sizes[0] / total
+
+    def _update_min_widths(self) -> None:
+        left_min = self.form_content.sizeHint().width()
+        right_min = self.response_widget.sizeHint().width()
+        self.form_scroll.setMinimumWidth(left_min)
+        self.response_scroll.setMinimumWidth(right_min)
+
+    def _apply_splitter_ratio(self) -> None:
+        self._update_min_widths()
+        total = self.splitter.width()
+        if total <= 0:
+            return
+        left_min = self.form_scroll.minimumWidth()
+        right_min = self.response_scroll.minimumWidth()
+        left = int(total * self._split_ratio)
+        left = max(left, left_min)
+        right = total - left
+        if right < right_min:
+            right = right_min
+            left = total - right
+        if left < left_min:
+            left = left_min
+            right = total - left
+        self.splitter.setSizes([max(left, 0), max(right, 0)])
+
+    def _init_menu(self) -> None:
+        menu = self.menuBar()
+        help_menu = menu.addMenu("Ayuda")
+        about_action = QtGui.QAction("Acerca de", self)
+        about_action.triggered.connect(self._show_about)
+        help_menu.addAction(about_action)
+
     def _wire_actions(self) -> None:
         self.send_btn.clicked.connect(self.on_send)
         self.clear_btn.clicked.connect(self.on_clear)
@@ -321,7 +397,9 @@ class LLMPanel(QtWidgets.QMainWindow):
         self.base_url.setText(cfg_dict.get("base_url", self.base_url.text()))
         self.endpoint.setText(cfg_dict.get("endpoint", self.endpoint.text()))
         if "api_key" in cfg_dict and cfg_dict["api_key"] is not None:
-            self.api_key.setText(cfg_dict.get("api_key", ""))
+            api_key = str(cfg_dict.get("api_key", ""))
+            if api_key and not self._is_masked_key(api_key):
+                self.api_key.setText(api_key)
         self.model.setText(cfg_dict.get("model", self.model.text()))
         self.system_prompt.setPlainText(cfg_dict.get("system_prompt", self.system_prompt.toPlainText()))
         self.user_prompt.setPlainText(cfg_dict.get("user_prompt", self.user_prompt.toPlainText()))
@@ -346,6 +424,7 @@ class LLMPanel(QtWidgets.QMainWindow):
 
         cfg = self._get_cfg()
         data = asdict(cfg)
+        data["api_key"] = self._mask_key(data.get("api_key", ""))
 
         self._profiles[name] = data
         self._profile_store.save(self._profiles)
@@ -531,6 +610,42 @@ class LLMPanel(QtWidgets.QMainWindow):
         self._render_analysis(streaming=bool(result.get("streamed_text")))
 
         self.status.showMessage(f"OK ({status_code}) en {elapsed:.2f}s")
+
+    def _show_about(self) -> None:
+        py_version = sys.version.split()[0]
+        url = PROJECT_URL
+        if not (url.startswith("http://") or url.startswith("https://")):
+            url = f"https://{url}"
+        text = (
+            "<p><b>MiniPanel LLM API Tester</b></p>"
+            f"<p>Version: {APP_VERSION}</p>"
+            f"<p>Python: {py_version}</p>"
+            f"<p>Git: <a href=\"{url}\">{GITHUB_NAME}</a></p>"
+            f"<p>Creador: {CREATOR_NAME}</p>"
+        )
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle("Acerca de")
+        layout = QtWidgets.QVBoxLayout(dialog)
+        label = QtWidgets.QLabel(text)
+        label.setTextFormat(QtCore.Qt.TextFormat.RichText)
+        label.setOpenExternalLinks(True)
+        label.setWordWrap(True)
+        layout.addWidget(label)
+        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Ok)
+        buttons.accepted.connect(dialog.accept)
+        layout.addWidget(buttons)
+        dialog.exec()
+
+    def _mask_key(self, key: str) -> str:
+        key = (key or "").strip()
+        if not key:
+            return ""
+        if len(key) <= 4:
+            return "*" * len(key)
+        return f"{'*' * (len(key) - 4)}{key[-4:]}"
+
+    def _is_masked_key(self, key: str) -> bool:
+        return bool(key) and all(ch == "*" or ch.isalnum() for ch in key) and "*" in key
 
 
 def run_app() -> None:
